@@ -5,7 +5,7 @@ import sys, ast, argparse
 # Default configuration (will be merged with command-line args):
 config = {
     "condition"         : False,
-    # "ignore_exceptions" : False,
+    "ignore_exceptions" : False,
 }
 
 

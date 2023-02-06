@@ -8,7 +8,7 @@ cat notes.txt | py 'line.replace("awk", "py")'
 
 ## Installation
 
-Just place the `bin/py` file somewhere in your `PATH`.
+Just place the `bin/py` file somewhere in your `PATH`, and make it executable.
 
 You will need a `python` executable in the environment (`/usr/bin/env python`). Python 2 and 3 are both supported.
 
@@ -24,8 +24,8 @@ $ py '1 + 2'
 Modules are imported automatically, including from the current directory.
 
 ```
-$ py 'base64.b64encode("Hello")'
-SGVsbG8=
+$ py 'math.factorial(6)'
+720
 ```
 
 ## Processing input
@@ -35,9 +35,9 @@ variable names are used in the expression:
 
 Variable | Input mode
 -------- | -------------
-  line   | Eval expression for each line of input, assigning each to 'line'
-  lines  | Eval expression once, assigning a list of input lines to 'lines'
-  input  | Eval expression once, assigning the entire input to 'input'
+`line`   | Eval expression for each line of input, assigning each to `line`
+`lines`  | Eval expression once, assigning a list of input lines to `lines`
+`input`  | Eval expression once, assigning the entire input to `input`
 
 
 So you can do:
