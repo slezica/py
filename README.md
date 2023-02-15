@@ -59,4 +59,4 @@ $ ... | py 'max(lines, key=lambda l: len(l))'
 $ ... | py 'binascii.hexlify(binput)'
 ```
 
-You can only use one of the three magic variable pairs inside your expression, since they determine the processing mode.
+You can only use one of the three magic variable pairs inside your expression. For example, it's OK to use both `line` and `bline`, but not `line` and `input`.
