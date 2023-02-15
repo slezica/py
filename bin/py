@@ -1,35 +1,52 @@
 #!/usr/bin/env python
 
-import sys, ast, argparse
+import os, sys, ast, argparse
 
 # Default configuration (will be merged with command-line args):
 config = {
     "condition"         : False,
     "ignore_exceptions" : False,
+    "default_encoding"  : 'utf-8'
 }
 
+class ExecMode:
+    "Strategy for evaluating an expression given an input stream"
+    ONCE       = 'once'       # Evaluate once.
+    ONCE_INPUT = 'once_input' # Evaluate once, passing the entire input (in VarMode type)
+    ONCE_LINES = 'once_lines' # Evaluate once, passing a list of lines (each in VarMode type)
+    EACH_LINE  = 'each_line'  # Evaluate for each line, passing the line (in VarMode type)
+    # These are strings mainly so I don't have to memorize numbers for debugging.
 
-def main():
-    args = parse_args()
-    config.update(args)
+class Var:
+    "Special variable with a known `name`, and an implied ExecMode `mode`"
+    def __init__(self, name, mode):
+        self.name = name
+        self.mode = mode
 
-    results = execute(args['expression'], sys.stdin)
+    def __repr__(self):
+        return self.name
 
-    for result in results:
-        if result is not None:
-            print(str(result).rstrip('\n'))
+class Vars:
+    "All special variables"
+    INPUT       = Var('input', ExecMode.ONCE_INPUT)
+    INPUT_BYTES = Var('binput', ExecMode.ONCE_INPUT)
+    LINES       = Var('lines', ExecMode.ONCE_LINES)
+    LINES_BYTES = Var('blines', ExecMode.ONCE_LINES)
+    LINE        = Var('line', ExecMode.EACH_LINE)
+    LINE_BYTES  = Var('bline', ExecMode.EACH_LINE)
+
+    ALL = [INPUT, INPUT_BYTES, LINES, LINES_BYTES, LINE, LINE_BYTES]
+    BY_NAME = { var.name: var for var in ALL }
 
 
-def error(err, abort = True):
-    message = str(err)
+PYTHON_VERSION = sys.version_info[0]
 
-    if isinstance(err, Exception):
-        message = type(err).__name__ + ": " + message
-
-    sys.stderr.write(message + '\n')
-
-    if abort:
-        sys.exit(1)
+if PYTHON_VERSION == 2:
+    BinaryType = str
+    TextType = unicode
+else:
+    BinaryType = bytes
+    TextType = str
 
 
 class Context(dict):
@@ -46,60 +63,107 @@ class NameCollector(ast.NodeVisitor):
         self.names.add(node.id)
         super(NameCollector, self).generic_visit(node)
 
-    def detect(self, expr):
+    def collect(self, expr):
         self.names = set()
         self.visit(expr)
         return self.names
 
 
-def collect_variable_names(expr):
-    try:
-        return NameCollector().detect(ast.parse(expr))
+class AbortException(Exception):
+    pass
 
-    except SyntaxError:
-        error("SyntaxError: " + expr)
+
+def fail(err, abort = True):
+    "Print `err` to stderr, then abort or continue"
+    message = str(err)
+
+    if isinstance(err, Exception):
+        message = type(err).__name__ + ": " + message
+
+    if abort:
+        raise AbortException(message)
+
+
+def execute(expr, mode, stream, encoding):
+    "Execute `expr` using `mode` on `stream`, and `encoding` for text variables"
+    context = Context()
+
+    if hasattr(__builtins__, '__dict__'):
+        context.update(__builtins__.__dict__)
+    else:
+        context.update(__builtins__)
+
+    if mode == ExecMode.ONCE:
+        yield evaluate(expr, context)
+
+    elif mode == ExecMode.ONCE_INPUT:
+        input = stream.read()
+        
+        context['binput'] = input
+        context['input'] = to_text(input, encoding)
+
+        yield evaluate(expr, context)
+
+    elif mode == ExecMode.ONCE_LINES:
+        line_list = [ line[:-1] if line[-1] == '\n' else line for line in stream ]
+
+        context['blines'] = line_list
+        context['lines'] = [ to_text(line, encoding) for line in line_list ]
+        yield evaluate(expr, context)
+
+    elif mode == ExecMode.EACH_LINE:
+        for line in stream:
+            if line[-1] in ('\n', 10):
+                line = line[:-1]
+
+            context['bline'] = line
+            context['line'] = to_text(line, encoding)
+            
+            yield evaluate(expr, context)
 
 
 def evaluate(expr, context):
+    "Evaluate `expr` in `context`, hanlding exceptions"
     try:
         return eval(expr, context)
 
     except Exception as e:
-        error(e, abort = not config['ignore_exceptions'])
+        fail(e, abort = not config['ignore_exceptions'])
 
 
-def execute(expr, stream):
-    # Input hanlding mode is auto-detected from variables used in expression
-    names   = collect_variable_names(expr)
-    special = names.intersection({'line', 'lines', 'input'})
+def detect_mode(expr):
+    "Return the mode implied by special variable names in `expr`"
+    try:
+        expr_names = NameCollector().collect(ast.parse(expr))
+    except SyntaxError:
+        fail("Syntax error in expression: " + expr)
 
-    if len(special) > 1:
-        error("Only one of 'line', 'lines' and 'input' can be used")
+    special_names = set(var.name for var in Vars.ALL)
 
-    context = Context()
-    context.update(__builtins__.__dict__)
+    expr_special_names = expr_names.intersection(special_names)
 
-    if len(special) == 0: # ignore input stream
-        yield evaluate(expr, context)
-        return
+    if len(expr_special_names) == 0:
+        return ExecMode.ONCE
 
-    mode = special.pop()
+    vars = [ Vars.BY_NAME[name] for name in expr_special_names ]
+    var_modes = set(var.mode for var in vars)
 
-    if mode == 'input':
-        context['input'] = stream.read()
-        yield evaluate(expr, context)
+    if len(var_modes) > 1:
+        fail("Only one text/binary pair of %s can be used" % Vars.ALL)
+    
+    return vars[0].mode
 
-    elif mode == 'lines':
-        context['lines'] = stream.read().split('\n')
-        yield evaluate(expr, context)
 
-    elif mode == 'line':
-        for line in stream:
-            context['line'] = line[:-1]
-            yield evaluate(expr, context)
+def detect_encoding(f):
+    "Return the encoding for file-like object `f`, or the default"
+    if hasattr(f, 'encoding') and f.encoding is not None:
+        return f.encoding
+    else: 
+        return config['default_encoding']
 
 
 def parse_args():
+    "Obtain configuration from command-line arguments"
     parser = argparse.ArgumentParser()
 
     parser.add_argument("expression",
@@ -107,12 +171,52 @@ def parse_args():
         default = 'None'
     )
 
-    # parser.add_argument('-i', '--ignore-exceptions',
-    #     action  = 'store_true',
-    #     help    = "skip items that raise exceptions"
-    # )
+    parser.add_argument('-i', '--ignore-exceptions',
+        action  = 'store_true',
+        help    = "skip items that raise exceptions",
+        default = False
+    )
 
     return parser.parse_args().__dict__
+
+
+def to_text(x, encoding):
+    "Convert `x` to TextType using `encoding`, in both Python 2 and 3"
+    if isinstance(x, TextType):
+        return x
+    elif isinstance(x, BinaryType):
+        return x.decode(encoding)
+    else:
+        raise TypeError("Can't convert '%s' to text" % type(x))
+
+def to_binary(x, encoding):
+    "Convert `x` to BinaryType using `encoding`, in both Python 2 and 3"
+    if isinstance(x, BinaryType):
+        return x
+    if isinstance(x, TextType):
+        return x.encode(encoding)
+    raise TypeError("Can't convert '%s' to binary" % type(x))
+
+
+def main():
+    args = parse_args()
+    config.update(args)
+
+    expr = args['expression']
+    mode = detect_mode(expr)
+    encoding = detect_encoding(sys.stdin)
+
+    with os.fdopen(sys.stdin.fileno(), 'rb') as stdin_rb:
+        results = execute(expr, mode, stdin_rb, encoding)
+
+        for result in results:
+            if result is None:
+                continue
+
+            sys.stdout.write(result)
+
+            if mode == ExecMode.EACH_LINE:
+                sys.stdout.write('\n')
 
 
 if __name__ == '__main__':
