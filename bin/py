@@ -187,7 +187,7 @@ def to_text(x, encoding):
     elif isinstance(x, BinaryType):
         return x.decode(encoding)
     else:
-        raise TypeError("Can't convert '%s' to text" % type(x))
+        return TextType(x)
 
 def to_binary(x, encoding):
     "Convert `x` to BinaryType using `encoding`, in both Python 2 and 3"
@@ -213,10 +213,7 @@ def main():
             if result is None:
                 continue
 
-            sys.stdout.write(result)
-
-            if mode == ExecMode.EACH_LINE:
-                sys.stdout.write('\n')
+            sys.stdout.write(to_text(result, encoding) + '\n')
 
 
 if __name__ == '__main__':
